@@ -20,6 +20,12 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(socket, &SocketConnect::connectedSuccessfully, this, &MainWindow::onConnect);
     connect(socket, &SocketConnect::sendIncomingMessages, this, &MainWindow::parseMessages);
     socket->connectToSocket(BITURL);
+    m_buttonMapper = new QSignalMapper(this);
+    connect(m_buttonMapper,SIGNAL(mapped(int)),this,SLOT(startTrader(int)));
+    m_walletWidget = new QWidget();
+    QVBoxLayout *l = new QVBoxLayout();
+    m_walletWidget->setLayout(l);
+    ui->verticalLayout_main->addWidget(m_walletWidget);
 }
 
 MainWindow::~MainWindow()
@@ -68,26 +74,97 @@ void MainWindow::parseMessages(QByteArray message)
     QJsonDocument doc = QJsonDocument::fromJson(message);
     QJsonArray inc = doc.array();
 
-    if(inc.size() >= 3)
+    if(m_mode == 0)
     {
-        if(inc.at(1).toString() == "ws")
+        if(inc.size() >= 3)
         {
-            QJsonArray wallet = inc.at(2).toArray();
-            for(int i = 0; i < wallet.size(); i++)
+            if(inc.at(1).toString() == "ws")
             {
-                QJsonArray coin = wallet.at(i).toArray();
-                QHBoxLayout *l = new QHBoxLayout();
+                QJsonArray wallet = inc.at(2).toArray();
+                for(int i = 0; i < wallet.size(); i++)
+                {
+                    QJsonArray coin = wallet.at(i).toArray();
+                    if(coin.at(0).toString() == "exchange" && coin.at(1).toString() != "USD")
+                    {
+                        QHBoxLayout *l = new QHBoxLayout();
+                        QWidget *w = new QWidget();
+                        w->setLayout(l);
+                        m_walletWidget->layout()->addWidget(w);
 
-                QLabel *typeLabel = new QLabel(coin.at(0).toString());
-                QLabel *coinLabel = new QLabel(coin.at(1).toString());
-                QLabel *amountLabel = new QLabel(QString::number(coin.at(2).toDouble()));
+                        QLabel *coinLabel = new QLabel(coin.at(1).toString());
+                        QLabel *amountLabel = new QLabel(QString::number(coin.at(2).toDouble()));
 
-                l->addWidget(typeLabel);
-                l->addWidget(coinLabel);
-                l->addWidget(amountLabel);
+                        l->addWidget(coinLabel);
+                        m_currencyList.insert(i, coinLabel->text());
+                        l->addWidget(amountLabel);
+                        l->addStretch(0);
 
-                ui->verticalLayout_main->addLayout(l);
+                        QLineEdit *le = new QLineEdit();
+                        le->setValidator(new QRegExpValidator(QRegExp("(0|([1-9][0-9]*))(\\.[0-9]+)?$"), this));
+                        m_lineeditList.insert(i, le);
+                        l->addWidget(le);
+
+                        QPushButton *pb = new QPushButton("Start");
+                        QObject::connect(pb, SIGNAL(clicked()),m_buttonMapper,SLOT(map()));
+                        m_buttonMapper->setMapping(pb, i);
+                        l->addWidget(pb);
+                    }
+                }
             }
         }
+    }
+    if(m_mode == 1)
+    {
+        if(inc.size() >= 2 && m_eventNumber >= 0)
+        {
+            if(inc.at(0).toInt() == m_eventNumber && inc.at(1).toString() == "te")
+            {
+                QJsonArray trade = inc.at(2).toArray();
+                if(trade.size() == 4)
+                {
+                    double timestamp = trade.at(1).toDouble();
+                    double price = trade.at(3).toDouble();
+
+                    if(tradeLine < 0)
+                        tradeLine = price;
+
+                    estimatedValue = (simulatedCurrency * price) + simulatedCash;
+
+                    traderList.append(QPair<double,double>(timestamp,price));
+
+
+                }
+            }
+        }
+        else
+        {
+            QJsonObject event = doc.object();
+            if(event.contains("event") && event.contains("chanId") && event.contains("channel"))
+            {
+                if(event["event"].toString() == "subscribed" && event["channel"].toString() == "trades")
+                {
+                    m_eventNumber = event["chanId"].toInt();
+                }
+            }
+        }
+    }
+}
+
+void MainWindow::startTrader(int id)
+{
+    if(m_lineeditList.contains(id))
+    {
+        m_walletWidget->hide();
+        m_walletWidget->deleteLater();
+        m_mode = 1;
+        m_maxTrade = m_lineeditList.value(id)->text().toDouble();
+
+        QJsonObject obj;
+        obj["event"] = "subscribe";
+        obj["channel"] = "trades";
+        obj["symbol"] = "t"+m_currencyList.value(id)+"USD";
+        QJsonDocument doc(obj);
+
+        socket->write(doc.toJson(QJsonDocument::Compact));
     }
 }
